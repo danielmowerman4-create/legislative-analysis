@@ -1,0 +1,1 @@
+ALTER TABLE "roll_calls" ALTER COLUMN "vote_date" DROP NOT NULL;

@@ -1,0 +1,37 @@
+# Local stack with real PostgreSQL (pgvector) and Redis: `docker compose up --build`. Settings come from .env.docker (see README).
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: li
+      POSTGRES_PASSWORD: li_dev_password
+      POSTGRES_DB: legislative_intelligence
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U li -d legislative_intelligence"]
+      interval: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]
+  migrate:
+    build: .
+    command: ["npm", "run", "db:migrate"]
+    env_file: .env.docker
+    depends_on: { db: { condition: service_healthy } }
+  web:
+    build: .
+    command: ["npm", "start"]
+    env_file: .env.docker
+    environment: { WORKER_MODE: external }
+    ports: ["3000:3000"]
+    depends_on: { migrate: { condition: service_completed_successfully }, redis: { condition: service_started } }
+  worker:
+    build: .
+    command: ["npm", "run", "worker"]
+    env_file: .env.docker
+    environment: { WORKER_MODE: external }
+    depends_on: { migrate: { condition: service_completed_successfully }, redis: { condition: service_started } }
+volumes:
+  pgdata:

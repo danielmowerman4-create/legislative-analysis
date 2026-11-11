@@ -1,0 +1,25 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: test
+      SESSION_SECRET: ci-session-secret-0123456789abcdef0123456789
+      TOKEN_ENCRYPTION_KEY: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      # Same npm as development and the Dockerfile; npm 10 rejects a lockfile written by npm 11.
+      - run: npm install -g npm@11.12.1
+      - run: npm ci
+      # The type check needs the route types Next generates.
+      - run: npx next typegen
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+      # docs/openapi.json must match the routes it describes.
+      - run: npm run openapi && git diff --exit-code docs/openapi.json
+      - run: npm run build

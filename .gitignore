@@ -1,0 +1,27 @@
+# dependencies
+/node_modules
+
+# build output
+/.next/
+/out/
+/build
+/coverage
+*.tsbuildinfo
+next-env.d.ts
+
+# local settings and data
+.env*
+!.env.example
+.data/
+.scratch/
+/backups
+*.pem
+.DS_Store
+npm-debug.log*
+
+# written by `next dev`
+/AGENTS.md
+
+# generated reports (npm run schema:doc, scripts/eval.ts)
+/DATABASE_SCHEMA.md
+/EVAL_REPORT.md
