@@ -2,12 +2,15 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { requireOffice } from "@/server/auth/next";
 import { can } from "@/server/authz/context";
-import { centerCounts, centerEnabled } from "@/server/services/center";
-import { legislativeFreshness, listEvents, POSITION_LABEL, todayBriefing } from "@/server/services/legislation";
+import { centerCounts, centerEnabled, topics } from "@/server/services/center";
+import { billsToAnswer } from "@/server/services/bill-answers";
+import { officeCalendar } from "@/server/services/calendar";
+import { legislativeFreshness, POSITION_LABEL, todayBriefing } from "@/server/services/legislation";
 import type { BillPosition } from "@/server/db/schema";
 import { ActionLink, cn, Landmark, PageHeader, SepList } from "@/components/ui";
 import { BillSearch } from "@/components/bill-search";
 import { CenterDoor } from "@/components/center/door";
+import { SplitBar } from "@/components/center/graphs";
 import { Freshness, Section } from "@/components/ui/blocks";
 import { BillLine, CHAMBER, Meeting, MeetingBill, PositionMark, PriorityMark } from "@/components/bills";
 import { dayKey, dayLabel, dateOnly, DISPLAY_TIME_ZONE, isDateOnly, shortDate, timeOnly } from "@/lib/format";
@@ -21,14 +24,70 @@ export default async function TodayPage() {
   const { ctx } = await requireOffice();
   const now = new Date();
   const today = dayKey(now);
-  const range = { from: new Date(now.getTime() - 3600_000), to: new Date(now.getTime() + 14 * 86400_000), trackedOnly: true };
-  const [brief, events, fresh] = await Promise.all([todayBriefing(ctx), listEvents(ctx, range), legislativeFreshness(ctx)]);
-  const byDay = new Map<string, typeof events>();
-  for (const e of events) byDay.set(dayKey(e.startsAt), [...(byDay.get(dayKey(e.startsAt)) ?? []), e]);
+  const range = { from: new Date(now.getTime() - 3600_000), to: new Date(now.getTime() + 14 * 86400_000), scope: "mine" as const };
+  const [brief, calendar, fresh] = await Promise.all([todayBriefing(ctx), officeCalendar(ctx, range), legislativeFreshness(ctx)]);
+  const events = calendar.hearings;
+  const coming = [...events.map((e) => ({ at: e.startsAt, hearing: e, own: null })), ...calendar.own.map((e) => ({ at: e.startsAt, hearing: null, own: e }))]
+    .sort((a, b) => a.at.getTime() - b.at.getTime());
+  const byDay = new Map<string, typeof coming>();
+  for (const e of coming) byDay.set(dayKey(e.at), [...(byDay.get(dayKey(e.at)) ?? []), e]);
   const trackedTotal = Object.values(brief.positions).reduce((s, n) => s + (n ?? 0), 0);
   const counts = (Object.keys(POSITION_LABEL) as BillPosition[]).filter((p) => brief.positions[p]);
   const closed = brief.session?.closed ? brief.session : null;
-  const center = can(ctx, "inbox.read") && (await centerEnabled(ctx.orgId)) ? await centerCounts(ctx) : null;
+  const inCenter = can(ctx, "inbox.read") && (await centerEnabled(ctx.orgId));
+  const center = inCenter ? await centerCounts(ctx) : null;
+  const [writing, toAnswer] = await Promise.all([
+    inCenter ? topics(ctx).then((t) => t.bills.slice(0, 5)) : [], inCenter && can(ctx, "communications.draft") ? billsToAnswer(ctx) : [],
+  ]);
+  const onToday = coming.filter((e) => dayKey(e.at) === today).length;
+  const due = brief.followUps.filter((f) => f.dueDate && f.dueDate <= today).length;
+  const peopleToAnswer = toAnswer.reduce((t, b) => t + b.toAnswer, 0);
+  const steps: { n: number; text: string; href: string; go: string; urgent?: boolean }[] = [
+    { n: center?.urgent ?? 0, text: center?.urgent === 1 ? "urgent letter" : "urgent letters", href: "/constituent-center", go: "Read them", urgent: true },
+    { n: (center?.needsPerson ?? 0) - (center?.urgent ?? 0), text: "waiting for a person", href: "/constituent-center", go: "Needs a person" },
+    { n: peopleToAnswer, text: `to answer on ${toAnswer.length} ${toAnswer.length === 1 ? "bill" : "bills"}`, href: "/constituent-center/replies",
+      go: "Answer them" },
+    { n: center?.drafts ?? 0, text: center?.drafts === 1 ? "reply in progress" : "replies in progress", href: "/constituent-center/replies", go: "Replies" },
+    { n: onToday, text: "on the calendar today", href: "/calendar", go: "Calendar" },
+    { n: due, text: due === 1 ? "follow-up due" : "follow-ups due", href: "/tracked?mine=1", go: "Follow-ups" },
+  ].filter((x) => x.n > 0);
+
+  const comingUp = (
+    <Section title="Coming up" href="/calendar" linkLabel="Calendar">
+      {coming.length === 0 ? (
+        <Empty>Nothing for your committees or tracked bills in the next two weeks.</Empty>
+      ) : (
+        <ol className="flex flex-col gap-9">
+          {[...byDay.entries()].map(([day, list]) => {
+            const label = dayLabel(list[0].at, now);
+            return (
+              <li key={day}>
+                <h3 className={cn("kicker border-b-2 border-ink pb-2.5", label === "Today" ? "text-accent" : "text-ink")}>{label}</h3>
+                <ul className="divide-y divide-line">
+                  {list.map(({ hearing: e, own: o }) => e ? (
+                    <Meeting key={e.id} time={isDateOnly(e.startsAt) ? null : timeOnly(e.startsAt)} title={e.title} detail={e.location}
+                      prepHref={e.bills.length ? `/calendar/${e.id}/prep` : undefined}>
+                      <ul className="mt-3">
+                        {e.bills
+                          .filter((b) => b.position)
+                          .map((b) => (
+                            <MeetingBill key={b.id} id={b.id} identifier={b.identifier} title={b.title} position={b.position} priority={b.priority} />
+                          ))}
+                      </ul>
+                    </Meeting>
+                  ) : o ? (
+                    <Meeting key={o.id} time={o.allDay ? "All day" : timeOnly(o.startsAt)} title={o.title} detail={o.location}>
+                      {o.note && <p className="hand mt-1.5 text-lg">{o.note}</p>}
+                    </Meeting>
+                  ) : null)}
+                </ul>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </Section>
+  );
 
   return (
     <>
@@ -52,8 +111,8 @@ export default async function TodayPage() {
               </span>
             ) : (
               trackedTotal > 0 && (
-                <Link href="/calendar?scope=tracked" className="transition-colors hover:text-ink">
-                  {events.length} {events.length === 1 ? "hearing" : "hearings"} in the next 14 days
+                <Link href="/calendar" className="transition-colors hover:text-ink">
+                  {coming.length} on the calendar in the next 14 days
                 </Link>
               )
             )}
@@ -68,6 +127,46 @@ export default async function TodayPage() {
         </div>
       </PageHeader>
       <Landmark className="landmark-clear" />
+
+      <div className="wrap">
+        <Section title="Start here">
+          {steps.length === 0 ? (
+            <Empty>Nothing is waiting.</Empty>
+          ) : (
+            <ol className="-mt-3 flex flex-col">
+              {steps.map((x) => (
+                <li key={x.text} className="grid items-baseline gap-x-8 gap-y-1 py-3 sm:grid-cols-[96px_minmax(0,1fr)_190px]">
+                  <span className={cn("rail-title tabular text-[46px] leading-none", x.urgent ? "text-danger" : "text-ink")}>{x.n}</span>
+                  <span className="text-lg text-ink">{x.text}</span>
+                  <ActionLink href={x.href}>{x.go}</ActionLink>
+                </li>
+              ))}
+            </ol>
+          )}
+        </Section>
+        {writing.length > 0 && (
+          <Section title="What people write about" href="/constituent-center/topics" linkLabel="Topics">
+            <ul className="-mt-3 flex flex-col">
+              {writing.map((b) => (
+                <li key={b.reference} className="grid items-center gap-x-8 gap-y-1 py-3 sm:grid-cols-[96px_minmax(0,1fr)_190px]">
+                  <Link href={`/constituent-center/topics/${encodeURIComponent(b.reference)}`}
+                    className="font-display text-lg font-bold whitespace-nowrap text-ink decoration-rule underline-offset-4 hover:underline">
+                    {b.reference}
+                  </Link>
+                  <div className="min-w-0">
+                    {b.title && <p className="line-clamp-1 text-base text-ink">{b.title}</p>}
+                    <SplitBar sides={b} label={b.reference} className="mt-1.5 max-w-[26rem]" />
+                  </div>
+                  <p className="tabular text-sm text-ink-2">
+                    <span className="font-semibold text-support">{b.support} support</span>, <span className="font-semibold text-oppose">{b.oppose} oppose</span>
+                    {b.other > 0 ? `, ${b.other} other` : ""}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
+      </div>
 
       {brief.followUps.length > 0 && (
         <div className="wrap">
@@ -101,41 +200,13 @@ export default async function TodayPage() {
 
       {closed ? (
         <>
+          {coming.length > 0 && <div className="wrap">{comingUp}</div>}
           {brief.seats.length > 0 && <YourCommittees seats={brief.seats} />}
           <ClosedSession results={brief.results} />
         </>
       ) : (
       <div className="wrap">
-        <Section title="Coming up on tracked bills" href="/calendar" linkLabel="Calendar">
-          {events.length === 0 ? (
-            <Empty>No hearings or floor sessions on tracked bills in the next two weeks.</Empty>
-          ) : (
-            <ol className="flex flex-col gap-9">
-              {[...byDay.entries()].map(([day, list]) => {
-                const label = dayLabel(list[0].startsAt, now);
-                return (
-                  <li key={day}>
-                    <h3 className={cn("kicker border-b-2 border-ink pb-2.5", label === "Today" ? "text-accent" : "text-ink")}>{label}</h3>
-                    <ul className="divide-y divide-line">
-                      {list.map((e) => (
-                        <Meeting key={e.id} time={isDateOnly(e.startsAt) ? null : timeOnly(e.startsAt)} title={e.title} detail={e.location}
-                          prepHref={e.bills.length ? `/calendar/${e.id}/prep` : undefined}>
-                          <ul className="mt-3">
-                            {e.bills
-                              .filter((b) => b.position)
-                              .map((b) => (
-                                <MeetingBill key={b.id} id={b.id} identifier={b.identifier} title={b.title} position={b.position} priority={b.priority} />
-                              ))}
-                          </ul>
-                        </Meeting>
-                      ))}
-                    </ul>
-                  </li>
-                );
-              })}
-            </ol>
-          )}
-        </Section>
+        {comingUp}
 
         <Section title="Moved in the last 7 days" href="/bills?view=tracked" linkLabel="Tracked bills">
           {brief.moved.length === 0 ? (

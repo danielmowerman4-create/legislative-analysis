@@ -106,6 +106,36 @@ describe("classification pipeline", () => {
     expect(s.positions.find((p) => p.bill_reference === "SB 40")!.position).toBe("unclear");
   });
 
+  it("gives a vote ask in its own sentence to the letter's only bill, for a person to confirm", async () => {
+    const r = await run("Our school funding formula is decades out of date. HB 142 comes up Thursday. Please vote yes.");
+    const hb = r.positions.find((p) => p.bill_reference === "HB 142")!;
+    expect(hb.position).toBe("support");
+    expect(hb.confidence).toBeLessThan(0.9);
+    const two = await run("HB 142 and SB 40 both come up Thursday. I have read them. Please vote yes.");
+    expect(two.positions.filter((p) => p.target_type === "bill").map((p) => p.position)).toEqual(["unclear", "unclear"]);
+  });
+
+  it("does not pin a side taken on something else to a bill the letter only asks about", async () => {
+    const r = await run("What would SB 40 cost the county each year? Separately, I oppose the new parking fees at the capitol.");
+    expect(r.positions.find((p) => p.bill_reference === "SB 40")!.position).toBe("neutral");
+  });
+
+  it("reads everyday ways of taking a side, and only suggests the less certain ones", async () => {
+    const side = async (body: string) => (await run(body)).positions.find((p) => p.target_type === "bill")!;
+    expect((await side("I hope HB 142 has your vote.")).position).toBe("support");
+    expect((await side("We urge passage of HB 142.")).position).toBe("support");
+    expect((await side("The Demo Farm Bureau urges passage of HB 142.")).position).toBe("support");
+    for (const body of ["HB 142 can't come soon enough.", "I can't believe you voted against HB 142."]) {
+      const p = await side(body);
+      expect(p.position).toBe("support");
+      expect(p.confidence).toBeLessThan(0.9);
+    }
+    const go = await side("This is why SB 40 has to go.");
+    expect(go.position).toBe("oppose");
+    expect(go.confidence).toBeLessThan(0.9);
+    expect((await side("My mother has to go to dialysis on the bus. What does SB 40 change?")).position).toBe("neutral");
+  });
+
   it("detects a service request, case suggestion and sensitive content", async () => {
     const r = await run("I filed my unemployment claim with the Demo State Department of Labor in December and have still not received anything. I can't get through on the phone. My son has a medical diagnosis and we need the money. Can you help?");
     expect(r.message_type[0].type).toBe("constituent_service");

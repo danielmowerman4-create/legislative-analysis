@@ -66,6 +66,13 @@ export function DistrictWord({ status }: { status: string | null | undefined }) 
   return d ? <Status tone={d.tone}>{d.label}</Status> : null;
 }
 
+const STANCE_LABEL: Record<string, string> = { support: "Support", oppose: "Oppose", neutral: "Neutral", mixed: "Mixed", unclear: "Unclear" };
+const STANCE_TONE: Record<string, string> = { support: "text-support", oppose: "text-oppose" };
+
+export function StanceWord({ stance, className }: { stance: string; className?: string }) {
+  return <span className={cn("font-semibold whitespace-nowrap", STANCE_TONE[stance] ?? "text-ink-2", className)}>{STANCE_LABEL[stance] ?? stance}</span>;
+}
+
 export function TrustWord({ trust }: { trust: string }) {
   const t = trustInfo(trust);
   return <Status tone={t.tone}>{t.label}</Status>;

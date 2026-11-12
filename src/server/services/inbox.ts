@@ -17,9 +17,12 @@ export const INBOX_FOLDERS = {
 } as const;
 export type InboxFolder = keyof typeof INBOX_FOLDERS;
 
+export const STANCES = { support: "Support", oppose: "Oppose", neutral: "Neutral", mixed: "Mixed", unclear: "Unclear" } as const;
+export type Stance = keyof typeof STANCES;
+
 type InboxFilters = {
-  folder?: InboxFolder; kind?: StaffCategory; district?: DistrictView; q?: string; issue?: string; bill?: string; from?: string; to?: string; assignee?: string;
-  limit?: number; offset?: number;
+  folder?: InboxFolder; kind?: StaffCategory; district?: DistrictView; stance?: Stance; q?: string; issue?: string; bill?: string; from?: string; to?: string;
+  assignee?: string; limit?: number; offset?: number;
 };
 
 const primaryType = sql`${emailMessages.messageTypes}[1]`;
@@ -85,6 +88,9 @@ export async function listInbox(ctx: OfficeContext, f: InboxFilters) {
     ];
     if (f.kind) conds.push(categoryCondition(f.kind));
     if (f.district) conds.push(districtIs(f.district));
+    if (f.stance) {
+      conds.push(sql`exists (select 1 from issue_positions p where p.message_id = ${emailMessages.id} and p.target_type = 'bill' and p.status <> 'rejected' and p.position = ${f.stance})`);
+    }
     if (f.q?.trim()) conds.push(sql`${emailMessages.searchTsv} @@ websearch_to_tsquery('english', ${f.q.trim()})`);
     if (f.from) conds.push(gte(emailMessages.receivedAt, new Date(`${f.from}T00:00:00`)));
     if (f.to) conds.push(lte(emailMessages.receivedAt, new Date(`${f.to}T23:59:59`)));
@@ -120,6 +126,11 @@ export async function listInbox(ctx: OfficeContext, f: InboxFilters) {
         messageId: messageBillLinks.messageId, reference: messageBillLinks.reference, status: messageBillLinks.status, billId: messageBillLinks.billId,
       }).from(messageBillLinks).where(and(inArray(messageBillLinks.messageId, ids), ne(messageBillLinks.status, "rejected")))
       : [];
+    const stanceRows = ids.length
+      ? await tx.select({ messageId: issuePositions.messageId, reference: issuePositions.billReference, position: issuePositions.position })
+        .from(issuePositions)
+        .where(and(inArray(issuePositions.messageId, ids), eq(issuePositions.targetType, "bill"), ne(issuePositions.status, "rejected")))
+      : [];
     const caseRows = ids.length
       ? await tx.select({ messageId: caseMessages.messageId, caseNumber: cases.caseNumber, status: cases.status }).from(caseMessages)
         .innerJoin(cases, eq(cases.id, caseMessages.caseId)).where(inArray(caseMessages.messageId, ids))
@@ -134,8 +145,10 @@ export async function listInbox(ctx: OfficeContext, f: InboxFilters) {
             urgencyReason: r.urgencyReason ? "Sensitive" : null,
           }),
         issues: issueRows.filter((i) => i.messageId === r.id).map((i) => ({ key: i.key, label: i.label ?? i.key, suggested: i.status !== "confirmed" })),
-        bills: billRows.filter((b) => b.messageId === r.id)
-          .map((b) => ({ reference: b.reference, linked: Boolean(b.billId), suggested: b.status !== "confirmed" })),
+        bills: billRows.filter((b) => b.messageId === r.id).map((b) => ({
+          reference: b.reference, linked: Boolean(b.billId), suggested: b.status !== "confirmed",
+          stance: mayRead(ctx, r) ? (stanceRows.find((p) => p.messageId === r.id && p.reference === b.reference)?.position ?? null) : null,
+        })),
         cases: caseRows.filter((c) => c.messageId === r.id),
       })),
     };

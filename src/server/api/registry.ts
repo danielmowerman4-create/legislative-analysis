@@ -33,8 +33,9 @@ const ROUTES: Route[] = [
     errors: { 400: "No bill given", 401: "Not signed in", 404: "Bill not found" },
   },
   {
-    method: "get", path: "/api/export/calendar", summary: "Hearings from yesterday through the next 60 days as an iCalendar file",
-    auth: "session (legislation.read)", query: z.object({ scope: z.enum(["tracked"]).optional() }),
+    method: "get", path: "/api/export/calendar",
+    summary: "Hearings and the office's own calendar entries from yesterday through the next 60 days as an iCalendar file",
+    auth: "session (legislation.read)", query: z.object({ scope: z.enum(["mine", "all", "tracked"]).optional() }),
     response: z.string().describe("text/calendar attachment"), errors: { 401: "Not signed in" },
   },
   {

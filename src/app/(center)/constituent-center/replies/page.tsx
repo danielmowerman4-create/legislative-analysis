@@ -1,7 +1,10 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireCenter } from "@/server/auth/center";
 import { can } from "@/server/authz/context";
 import { listDrafts, listSentReplies, replyRoutes } from "@/server/services/replies";
+import { billsToAnswer } from "@/server/services/bill-answers";
+import { SplitBar } from "@/components/center/graphs";
 import { mailHref, NoRows, PageTitle, ROOT } from "@/components/center/parts";
 import { ReplyEditor } from "@/components/center/controls";
 import { ActionLink, Status } from "@/components/ui";
@@ -13,7 +16,7 @@ export default async function RepliesPage({ searchParams }: { searchParams: Prom
   if (!can(ctx, "communications.draft")) notFound();
   const { view } = await searchParams;
   const sentView = view === "sent";
-  const [drafts, sent] = await Promise.all([listDrafts(ctx), listSentReplies(ctx)]);
+  const [drafts, sent, waiting] = await Promise.all([listDrafts(ctx), listSentReplies(ctx), billsToAnswer(ctx)]);
   const routes = await replyRoutes(ctx, drafts);
   return (
     <>
@@ -25,6 +28,28 @@ export default async function RepliesPage({ searchParams }: { searchParams: Prom
 
       {!sentView && (
         <>
+          {waiting.length > 0 && (
+            <section aria-labelledby="bills-to-answer" className="mt-8">
+              <h2 id="bills-to-answer" className="rail-title text-[40px] text-ink lg:text-[48px]">Bills to answer</h2>
+              <ul className="mt-2">
+                {waiting.map((b) => (
+                  <li key={b.reference} className="grid items-center gap-x-10 gap-y-1 border-b border-line py-4 md:grid-cols-[190px_minmax(0,1fr)_190px]">
+                    <Link href={`${ROOT}/topics/${encodeURIComponent(b.reference)}`}
+                      className="text-lg font-semibold text-ink transition-colors hover:text-ink-2">
+                      {b.reference}
+                    </Link>
+                    <div className="min-w-0">
+                      {b.title && <p className="line-clamp-1 text-base text-ink">{b.title}</p>}
+                      {b.moved && b.lastActionText && <p className="line-clamp-1 text-sm text-ink-2">{b.lastActionText}, {shortDate(b.lastActionAt)}</p>}
+                      <SplitBar sides={b} label={b.reference} className="mt-2 max-w-[22rem]" />
+                    </div>
+                    <p className="tabular text-base text-ink md:text-right">{b.toAnswer} to answer</p>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {waiting.length > 0 && drafts.length > 0 && <h2 className="rail-title mt-12 text-[40px] text-ink lg:text-[48px]">Drafts</h2>}
           {drafts.length === 0 && <NoRows>No replies in progress.</NoRows>}
           <ul className="mt-2">
             {drafts.map((d) => (

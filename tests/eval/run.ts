@@ -70,8 +70,10 @@ const add = (m: PRF, pred: string[], gold: string[]) => {
 };
 
 export type CaseResult = { c: EvalCase; r: ClassificationResult; errors: string[] };
+const SET_ASIDE = ["newsletter_automated", "spam", "legislative_staff"];
 
-export async function evaluate(split: "dev" | "test" | "all") {
+export async function evaluate(split: EvalCase["split"] | "all", ai: PipelineDeps["ai"] = null) {
+  const deps = { ...EVAL_DEPS, ai };
   const cases = EVAL_CASES.filter((c) => split === "all" || c.split === split);
   const types: PRF = { tp: 0, fp: 0, fn: 0 };
   const issues: PRF = { tp: 0, fp: 0, fn: 0 };
@@ -86,6 +88,8 @@ export async function evaluate(split: "dev" | "test" | "all") {
   let posCorrect = 0;
   let posAuto = 0;
   let posAutoCorrect = 0;
+  const aside = { letters: 0, lettersSetAside: 0, bulk: 0, bulkKept: 0 };
+  const offered = { right: 0, wrong: 0 };
   const perClass: Record<string, PRF> = {};
   const results: CaseResult[] = [];
 
@@ -97,13 +101,28 @@ export async function evaluate(split: "dev" | "test" | "all") {
         bodyText: c.body,
         bodyHtml: null,
       },
-      EVAL_DEPS,
+      deps,
     );
     const errors: string[] = [];
     const predTypes = r.message_type.filter((t) => t.confidence >= 0.5).map((t) => t.type);
     add(types, predTypes as string[], c.gold.types);
     if (predTypes.join() !== [...c.gold.types].join() && !c.gold.types.every((t) => (predTypes as string[]).includes(t))) {
       errors.push(`types ${predTypes.join("+")} vs ${c.gold.types.join("+")}`);
+    }
+
+    const isAside = r.message_type.some((t) => SET_ASIDE.includes(t.type) && t.confidence >= 0.85);
+    if (c.gold.types.some((t) => SET_ASIDE.includes(t))) {
+      aside.bulk++;
+      if (!isAside) {
+        aside.bulkKept++;
+        errors.push("kept in the mail, but it is not a letter to the office");
+      }
+    } else {
+      aside.letters++;
+      if (isAside) {
+        aside.lettersSetAside++;
+        errors.push("set aside, but a person wrote it");
+      }
     }
 
     const predIssues = r.issues.map((i) => i.taxonomy_id).filter((k) => k.includes("."));
@@ -119,6 +138,15 @@ export async function evaluate(split: "dev" | "test" | "all") {
         errors.push(`missed bill ${g.ref}`);
         continue;
       }
+      // A bill AI named waits for a person, so it is counted apart from the rules' matches.
+      if (p.source === "ai") {
+        if (g.resolution === "resolved" && p.candidate_bill_ids.some((id) => keyForId.get(id) === g.bill)) offered.right++;
+        else {
+          offered.wrong++;
+          errors.push(`AI offered ${g.ref} for the wrong bill`);
+        }
+        continue;
+      }
       resolutionTotal++;
       const auto = p.resolution_status === "resolved" && p.confidence >= EVAL_DEPS.thresholds.billMatch && p.bill_id;
       const correctBill = g.resolution === "resolved" ? p.bill_id !== null && keyForId.get(p.bill_id) === g.bill : p.bill_id === null
@@ -131,7 +159,12 @@ export async function evaluate(split: "dev" | "test" | "all") {
       }
     }
     for (const p of r.bill_references) {
-      if (!c.gold.bills.some((g) => g.ref === p.reference) && p.resolution_status === "resolved" && p.confidence >= 0.95) billAuto++; // spurious auto-link
+      if (c.gold.bills.some((g) => g.ref === p.reference)) continue;
+      if (p.resolution_status === "resolved" && p.confidence >= 0.95) billAuto++; // spurious auto-link
+      if (p.source === "ai") {
+        offered.wrong++;
+        errors.push(`AI offered ${p.reference}, which the letter does not name`);
+      }
     }
 
     const predPos = r.positions.map((p) => ({ target: p.target_type === "bill" ? `bill:${p.bill_reference}` : `issue:${p.issue_id}`, position: p.position,
@@ -180,6 +213,8 @@ export async function evaluate(split: "dev" | "test" | "all") {
     positionAutoCoverage: posTotal ? posAutoCorrect / posTotal : 1,
     positionsPerClass: Object.fromEntries(Object.entries(perClass).map(([k, v]) => [k, prf(v)])),
     actions: prf(actions),
+    aside,
+    offered,
     results,
   };
 }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const PIPELINE_VERSION = "2026.11.9";
+export const PIPELINE_VERSION = "2026.11.11";
 
 export const MESSAGE_TYPES = [
   "constituent_policy",
@@ -56,6 +56,7 @@ export const classificationSchema = z.object({
       resolution_status: z.enum(BILL_RESOLUTIONS),
       confidence: z.number().min(0).max(1),
       notes: z.string(),
+      source: z.enum(["rule", "ai"]).default("rule"),
       evidence: z.array(evidenceSchema),
     }),
   ),

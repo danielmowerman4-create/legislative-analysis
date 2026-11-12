@@ -22,11 +22,12 @@ async function office() {
 }
 
 const classifyAll = () => drainJobs(["classify"]);
+// The demo HB 142 last moved four days ago: a month-old letter is from before that, a new one is not.
+const daysAgo = (n: number) => new Date(Date.now() - n * 86400_000);
 const message = async (orgId: string, id: string) => (await withTenant({ orgId }, (tx) => tx.select().from(emailMessages).where(eq(emailMessages.id, id))))[0];
 const group = (d: Awaited<ReturnType<typeof billAnswers>>, side: string) => d.groups.find((g) => g.side === side);
 
-// Skipped: bill numbers are not matched to tracker bills here, so 4 of 5 fail.
-describe.skip("answering everyone who wrote about a bill", () => {
+describe("answering everyone who wrote about a bill", () => {
   beforeAll(async () => {
     await freshDatabase();
     await syncJurisdiction("ZZ", { provider: new FixtureProvider(demoLegislativeDataset()), sessionIdentifiers: DEMO_SESSIONS().map((x) => x.identifier) });
@@ -100,9 +101,9 @@ describe.skip("answering everyone who wrote about a bill", () => {
   it("lists a bill to answer once the office has a position or the bill has moved, and drops it when everyone is answered", async () => {
     const o = await office();
     await receive(o.orgId,
-      { from: "ann@mail.test", name: "Ann Lee", body: "I oppose HB 142. Please vote no on HB 142.", at: new Date("2020-01-02T12:00:00Z") });
+      { from: "ann@mail.test", name: "Ann Lee", body: "I oppose HB 142. Please vote no on HB 142.", at: daysAgo(30) });
     await receive(o.orgId,
-      { from: "ben@mail.test", name: "Ben Ortiz", body: "I support HB 142. Please vote yes on HB 142.", at: new Date("2020-01-03T12:00:00Z") });
+      { from: "ben@mail.test", name: "Ben Ortiz", body: "I support HB 142. Please vote yes on HB 142.", at: daysAgo(29) });
     await classifyAll();
     const [bill] = await withTenant({ orgId: o.orgId }, (tx) => tx.select().from(bills).where(eq(bills.identifier, "HB 142")));
 
@@ -121,8 +122,7 @@ describe.skip("answering everyone who wrote about a bill", () => {
 
   it("does not list a bill that has not moved and has no position, until the office takes one", async () => {
     const o = await office();
-    await receive(o.orgId,
-      { from: "ann@mail.test", name: "Ann Lee", body: "I oppose HB 142. Please vote no on HB 142.", at: new Date("2099-01-02T12:00:00Z") });
+    await receive(o.orgId, { from: "ann@mail.test", name: "Ann Lee", body: "I oppose HB 142. Please vote no on HB 142." });
     await classifyAll();
     expect(await billsToAnswer(o.ctx)).toEqual([]);
     const [bill] = await withTenant({ orgId: o.orgId }, (tx) => tx.select().from(bills).where(eq(bills.identifier, "HB 142")));

@@ -70,6 +70,17 @@ function spellcheck(index: BillNameIndex, word: string) {
   return close.length === 1 ? close[0] : word;
 }
 
+// Bills whose titles share the letter's words, rarest words first, for a second reader to choose from.
+export function billsSharingWords(index: BillNameIndex, text: string, limit = 40): SessionBill[] {
+  if (index.count <= limit) return index.entries.map((e) => e.bill);
+  const score = new Map<number, number>();
+  for (const word of new Set(significantWords(text).map((w) => spellcheck(index, w)))) {
+    const entries = index.byWord.get(word) ?? [];
+    for (const i of entries) score.set(i, (score.get(i) ?? 0) + 1 / entries.length);
+  }
+  return [...score.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([i]) => index.entries[i].bill);
+}
+
 export type NameMatch = { raw: string; evidence: Evidence[]; bills: SessionBill[]; strength: "named" | "suggested" };
 
 type Hit = { entry: number; start: number; length: number };

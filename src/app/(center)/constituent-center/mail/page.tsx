@@ -4,9 +4,9 @@ import { requireCenter } from "@/server/auth/center";
 import { can } from "@/server/authz/context";
 import { STAFF_CATEGORIES, staffCategoryOf, type StaffCategory } from "@/server/classification/categories";
 import { listTeam } from "@/server/services/offices";
-import { folderCounts, INBOX_FOLDERS, listInbox, type InboxFolder } from "@/server/services/inbox";
+import { folderCounts, INBOX_FOLDERS, listInbox, STANCES, type InboxFolder, type Stance } from "@/server/services/inbox";
 import { BulkCheck, BulkMail } from "@/components/center/controls";
-import { DISTRICT_VIEWS, DistrictWord, mailHref, NoRows, PageTitle, ROOT, trustInfo } from "@/components/center/parts";
+import { DISTRICT_VIEWS, DistrictWord, mailHref, NoRows, PageTitle, ROOT, StanceWord, trustInfo } from "@/components/center/parts";
 import { ActionLink, Button, cn, Input, Status } from "@/components/ui";
 import { Segmented, Tabs } from "@/components/ui/blocks";
 import { fullDate, shortDate } from "@/lib/format";
@@ -14,7 +14,9 @@ import { fullDate, shortDate } from "@/lib/format";
 const SHOWN: InboxFolder[] = ["all", "new", "urgent", "held", "mine", "service", "policy", "meeting", "agency", "automated", "done"];
 const PAGE = 50;
 
-type MailPageProps = { searchParams: Promise<{ folder?: string; kind?: string; district?: string; q?: string; issue?: string; page?: string }> };
+type MailPageProps = {
+  searchParams: Promise<{ folder?: string; kind?: string; district?: string; stance?: string; q?: string; issue?: string; page?: string }>;
+};
 
 export default async function MailPage({ searchParams }: MailPageProps) {
   const { ctx } = await requireCenter();
@@ -25,10 +27,12 @@ export default async function MailPage({ searchParams }: MailPageProps) {
   const issue = sp.issue?.trim() || undefined;
   const kind = sp.kind && Object.hasOwn(STAFF_CATEGORIES, sp.kind) ? (sp.kind as StaffCategory) : undefined;
   const district = sp.district && Object.hasOwn(DISTRICT_VIEWS, sp.district) ? (sp.district as keyof typeof DISTRICT_VIEWS) : undefined;
+  const stance = sp.stance && Object.hasOwn(STANCES, sp.stance) ? (sp.stance as Stance) : undefined;
   const canTriage = can(ctx, "inbox.triage");
-  const [list, counts, team] = await Promise.all([listInbox(ctx, { folder, kind, district, q, issue, limit: PAGE, offset: (page - 1) * PAGE }),
-    folderCounts(ctx), canTriage ? listTeam(ctx) : []]);
-  const href = (patch: { folder?: string; page?: number; kind?: string | null; district?: string | null }) => {
+  const [list, counts, team] = await Promise.all([
+    listInbox(ctx, { folder, kind, district, stance, q, issue, limit: PAGE, offset: (page - 1) * PAGE }), folderCounts(ctx), canTriage ? listTeam(ctx) : [],
+  ]);
+  const href = (patch: { folder?: string; page?: number; kind?: string | null; district?: string | null; stance?: string | null }) => {
     const p = new URLSearchParams();
     const f = patch.folder ?? folder;
     if (f !== "all") p.set("folder", f);
@@ -36,6 +40,8 @@ export default async function MailPage({ searchParams }: MailPageProps) {
     if (k) p.set("kind", k);
     const d = patch.district === undefined ? district : patch.district;
     if (d) p.set("district", d);
+    const st = patch.stance === undefined ? stance : patch.stance;
+    if (st) p.set("stance", st);
     if (q) p.set("q", q);
     if (issue) p.set("issue", issue);
     if (patch.page && patch.page > 1) p.set("page", String(patch.page));
@@ -69,8 +75,11 @@ export default async function MailPage({ searchParams }: MailPageProps) {
                 {m.isSensitive && <Status>Sensitive</Status>}
                 {category !== "constituent" && <span className="text-ink-2">{STAFF_CATEGORIES[category]}</span>}
                 <DistrictWord status={m.districtStatus} />
-                {m.bills.filter((b) => b.linked).map((b) => (
-                  <span key={b.reference} className="font-semibold text-ink">{b.reference}</span>
+                {m.bills.filter((b) => b.linked || b.stance).map((b) => (
+                  <span key={b.reference} className="font-semibold text-ink">
+                    {b.reference}
+                    {b.stance && <>{" "}<StanceWord stance={b.stance} /></>}
+                  </span>
                 ))}
                 {m.issues.filter((i) => i.key.includes(".")).slice(0, 2).map((i) => <span key={i.key} className="text-ink-2">{i.label}</span>)}
                 {m.cases.map((c) => <span key={c.caseNumber} className="text-ink-2">Case {c.caseNumber}</span>)}
@@ -95,6 +104,7 @@ export default async function MailPage({ searchParams }: MailPageProps) {
         {folder !== "all" && <input type="hidden" name="folder" value={folder} />}
         {kind && <input type="hidden" name="kind" value={kind} />}
         {district && <input type="hidden" name="district" value={district} />}
+        {stance && <input type="hidden" name="stance" value={stance} />}
         <Input name="q" defaultValue={q} aria-label="Search the mail" placeholder="Search the mail" />
         <Button type="submit">Search</Button>
       </form>
@@ -114,6 +124,9 @@ export default async function MailPage({ searchParams }: MailPageProps) {
         <span className="kicker text-ink-3">District</span>
         <Segmented label="District" showLabel={false} current={district ?? "all"} items={[{ key: "all", label: "All", href: href({ district: null, page: 1 }) },
           ...Object.entries(DISTRICT_VIEWS).map(([key, label]) => ({ key, label, href: href({ district: key, page: 1 }) }))]} />
+        <span className="kicker text-ink-3">Stance</span>
+        <Segmented label="Stance on a bill" showLabel={false} current={stance ?? "all"} items={[{ key: "all", label: "All", href: href({ stance: null, page: 1 }) },
+          ...Object.entries(STANCES).map(([key, label]) => ({ key, label, href: href({ stance: key, page: 1 }) }))]} />
       </div>
 
       {list.items.length === 0 && <NoRows>{q ? `No mail matches ${q}.` : "No mail here."}</NoRows>}

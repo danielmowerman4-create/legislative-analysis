@@ -103,6 +103,7 @@ export function Masthead({ counts, office, session, demo, center, user }: Masthe
     { href: "/bills", label: "Bills" },
     { href: "/tracked", label: "Tracked", count: counts.tracked, countLabel: "tracked bills" },
     { href: "/calendar", label: "Calendar", count: counts.hearingsThisWeek, countLabel: "hearings this week on tracked bills" },
+    { href: "/press", label: "Press" },
     { href: "/compare", label: "Compare" },
   ];
   const research: Item[] = [

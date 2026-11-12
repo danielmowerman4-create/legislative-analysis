@@ -13,6 +13,7 @@ import { markDelivered } from "./answered";
 import { getAiProvider } from "../ai/provider";
 import { STATUS_LABEL } from "../legislation/normalize";
 import { extractBillMentions } from "../classification/bills";
+import { maskForModel } from "../classification/preprocess";
 import { audit } from "./audit";
 import { mayRead } from "./center";
 
@@ -81,7 +82,7 @@ export async function createReplyDraft(ctx: OfficeContext, messageId: string) {
   if (provider) {
     const r = await provider.generate({
       system: "Write one or two courteous sentences acknowledging what a constituent wrote to their state legislator's office. Official office correspondence only. Do not name any bill, state any position, predict any vote, or promise any outcome.",
-      sources: [{ id: `msg:${m.id}`, label: "Constituent message", text: m.substantiveText.slice(0, 4000) }],
+      sources: [{ id: `msg:${m.id}`, label: "Constituent message", text: maskForModel(m.substantiveText).slice(0, 4000) }],
       task: `Write the acknowledgement. Address the writer as ${first ?? "Constituent"} only if you use a name. Cite the source inline as [source:msg:${m.id}]; it will be removed before staff see the draft.`,
       maxTokens: 800,
     });

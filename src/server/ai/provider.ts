@@ -16,13 +16,16 @@ export type AiClassifyInput = {
   text: string;
   taxonomy: { key: string; label: string }[];
   billReferences: string[];
+  // This session's bills the rules did not find in the letter.
+  bills: { reference: string; title: string }[];
   issueTargets: string[];
   officeGuidance?: string | null;
 };
 
-export function aiClassificationSchema(taxonomyKeys: string[], targets: string[]) {
+export function aiClassificationSchema(taxonomyKeys: string[], targets: string[], bills: string[] = []) {
   const issueEnum = taxonomyKeys.length ? z.enum(taxonomyKeys as [string, ...string[]]) : z.string();
   const targetEnum = targets.length ? z.enum(targets as [string, ...string[]]) : z.string();
+  const billEnum = bills.length ? z.enum(bills as [string, ...string[]]) : z.string();
   return z.object({
     message_types: z.array(z.object({ type: z.enum(MESSAGE_TYPES), confidence: z.number() })),
     summary: z.string(),
@@ -31,6 +34,7 @@ export function aiClassificationSchema(taxonomyKeys: string[], targets: string[]
       target: targetEnum, position: z.enum(POSITIONS), confidence: z.number(), evidence_quote: z.string(), requested_action: z.enum(BILL_REQUESTS).nullable(),
     })),
     requested_actions: z.array(z.enum(REQUESTED_ACTIONS)),
+    bills: z.array(z.object({ reference: billEnum, confidence: z.number(), evidence_quote: z.string() })),
     asks: z.array(z.object({ kind: z.enum(ASK_KINDS), summary: z.string(), urgency: z.enum(ASK_URGENCY), evidence_quote: z.string() })),
   });
 }

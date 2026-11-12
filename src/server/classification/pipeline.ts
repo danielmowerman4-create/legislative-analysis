@@ -4,7 +4,7 @@ import type { AiClassification, AiProvider } from "../ai/provider";
 import { maskForModel, preprocess, type Preprocessed } from "./preprocess";
 import { compileTaxonomy, extractIssues, type TaxonomyNode } from "./issues";
 import { extractBillMentions, type BillCandidate } from "./bills";
-import { buildBillNameIndex, findBillNames, NO_SESSION, referencesToLoad, resolveMentions, type SessionScope } from "./bill-matching";
+import { billsSharingWords, buildBillNameIndex, findBillNames, NO_SESSION, referencesToLoad, resolveMentions, type SessionScope } from "./bill-matching";
 import { detectPositions, type PositionTarget } from "./positions";
 import {
   classifyMessageType,
@@ -44,6 +44,14 @@ export type PipelineInput = {
 
 const POLICY_TYPES: MessageTypeKey[] = ["constituent_policy", "organization"];
 const NON_CORRESPONDENCE: MessageTypeKey[] = ["newsletter_automated", "spam", "legislative_staff"];
+const PERSON_WROTE: MessageTypeKey[] = ["constituent_policy", "constituent_service", "meeting_request"];
+export const BROUGHT_BACK = "The rules set this aside as a newsletter or spam. The AI reading says a person wrote it.";
+
+function personWrote(ai: AiClassification) {
+  const most = (keys: MessageTypeKey[]) => ai.message_types.filter((t) => keys.includes(t.type)).sort((a, b) => b.confidence - a.confidence)[0];
+  const person = most(PERSON_WROTE);
+  return person && person.confidence >= 0.75 && person.confidence > (most(NON_CORRESPONDENCE)?.confidence ?? 0) ? person : undefined;
+}
 
 export const inputHash = (input: PipelineInput) =>
   createHash("sha256").update(`${PIPELINE_VERSION}\n${input.envelope.subject}\n${input.bodyText ?? ""}\n${input.bodyHtml ?? ""}`).digest("hex");
@@ -94,8 +102,48 @@ export async function runPipeline(input: PipelineInput, deps: PipelineDeps): Pro
     ...issueHits.map((h) => ({ key: `issue:${h.key}`, type: "issue" as const, issueKey: h.key, billReference: null, spans: bodySpans(h.evidence) })),
   ];
   const ruleTypes = types.map((t) => t.type);
-  const setAside = ruleTypes.some((t) => NON_CORRESPONDENCE.includes(t) && types.find((x) => x.type === t)!.confidence >= 0.85);
-  const correspondence = envelope.direction === "inbound" && !setAside;
+  const inbound = envelope.direction === "inbound";
+  const screened = (t: { type: MessageTypeKey; confidence: number }) => NON_CORRESPONDENCE.includes(t.type) && t.confidence >= 0.85;
+  const setAside = types.some(screened);
+
+  const formLetter = input.formLetter ?? null;
+  const note = formLetter?.personalNote ?? "";
+  const inScope = (s: string) => !formLetter || note.includes(s);
+  if (deps.aiWithheld) reviewReasons.push(deps.aiWithheld);
+
+  const found = new Set(matched.flatMap((m) => [m.mention.reference, ...m.resolution.candidateIds]));
+  const offered = inbound ? billsSharingWords(nameIndex, `${subject}\n${pre.substantive}`).filter((b) => !found.has(b.identifier) && !found.has(b.id)) : [];
+  // AI also takes a second look at mail the rules set aside, except staff mail.
+  const secondLook = inbound && setAside && !types.some((t) => t.type === "legislative_staff" && screened(t));
+  let ai: AiClassification | null = null;
+  let aiStatus: ClassificationResult["ai_status"] = "not_used";
+  const aiText = formLetter ? note : pre.substantive;
+  if (deps.ai && inbound && (!setAside || secondLook) && aiText.length > 0) {
+    ai = await deps.ai.classify({
+      subject: maskForModel(subject),
+      text: maskForModel(aiText),
+      taxonomy: deps.taxonomy.filter((t) => t.isActive !== false).map((t) => ({ key: t.key, label: t.label })),
+      billReferences: mentions.map((m) => m.reference),
+      bills: [...new Set(offered.map((b) => b.identifier))]
+        .map((reference) => ({ reference, title: offered.filter((b) => b.identifier === reference).map((b) => b.title).join(" / ") })),
+      issueTargets: issueHits.map((h) => `issue:${h.key}`),
+      officeGuidance: deps.officeGuidance,
+    });
+    aiStatus = ai ? "ok" : "failed";
+    if (!ai && !setAside) {
+      warnings.push("AI stage unavailable for this message; rules only.");
+      reviewReasons.push("The AI reading failed, so a person should read this.");
+    }
+  }
+  // AI can bring set-aside mail back for a person. It can never set mail aside.
+  const person = secondLook && ai ? personWrote(ai) : undefined;
+  if (person) {
+    types = types.filter((t) => !screened(t));
+    reviewReasons.push(BROUGHT_BACK);
+  }
+  const correspondence = inbound && (!setAside || Boolean(person));
+  // What AI said about mail that stays set aside is not used.
+  if (!correspondence) ai = null;
   const speaksForThemselves = !["media", "vendor", "government_agency"].includes(ruleTypes[0]);
   const positions = correspondence && speaksForThemselves ? detectPositions(pre.substantive, targets) : [];
   if (positions.length && !inheritedSubject) {
@@ -111,30 +159,6 @@ export async function runPipeline(input: PipelineInput, deps: PipelineDeps): Pro
       body.confidence = Math.min(s.confidence, 0.88);
       body.evidence = s.evidence.map((e) => ({ ...e, field: "subject" as const }));
       body.notes = "Stated in the subject line.";
-    }
-  }
-
-  const formLetter = input.formLetter ?? null;
-  const note = formLetter?.personalNote ?? "";
-  const inScope = (s: string) => !formLetter || note.includes(s);
-  if (deps.aiWithheld) reviewReasons.push(deps.aiWithheld);
-
-  let ai: AiClassification | null = null;
-  let aiStatus: ClassificationResult["ai_status"] = "not_used";
-  const aiText = formLetter ? note : pre.substantive;
-  if (deps.ai && correspondence && aiText.length > 0) {
-    ai = await deps.ai.classify({
-      subject: maskForModel(subject),
-      text: maskForModel(aiText),
-      taxonomy: deps.taxonomy.filter((t) => t.isActive !== false).map((t) => ({ key: t.key, label: t.label })),
-      billReferences: mentions.map((m) => m.reference),
-      issueTargets: issueHits.map((h) => `issue:${h.key}`),
-      officeGuidance: deps.officeGuidance,
-    });
-    aiStatus = ai ? "ok" : "failed";
-    if (!ai) {
-      warnings.push("AI stage unavailable for this message; rules only.");
-      reviewReasons.push("The AI reading failed, so a person should read this.");
     }
   }
   // A quote found only in the masked text is dropped without a warning.
@@ -167,6 +191,24 @@ export async function runPipeline(input: PipelineInput, deps: PipelineDeps): Pro
       issues.push({ taxonomy_id: hit.key, confidence: 0.86, source: "rule", evidence: mentions[i].evidence });
     }
   });
+
+  const aiBills: ClassificationResult["bill_references"] = [];
+  for (const a of ai?.bills ?? []) {
+    const bills = offered.filter((b) => b.identifier === a.reference);
+    if (!bills.length || aiBills.some((b) => b.reference === a.reference)) continue;
+    const ev = locate(a.evidence_quote, pre.substantive);
+    if (!ev || !inScope(ev.text)) {
+      if (!ev && locate(a.evidence_quote, masked) === null) warnings.push(`Dropped AI bill ${a.reference}: its quote is not in the message.`);
+      continue;
+    }
+    const raw = ev.text.replace(/\s+/g, " ").slice(0, 80);
+    const notes = `AI reads "${raw}" as ${bills.map((b) => `${b.identifier}, ${b.title.slice(0, 70)}`).join(" or ")}. The rules did not find it.`;
+    aiBills.push({
+      raw_reference: raw, reference: a.reference, bill_id: null, candidate_bill_ids: bills.map((b) => b.id), resolution_status: "ambiguous",
+      confidence: Number(Math.min(a.confidence, 0.8).toFixed(2)), notes, source: "ai", evidence: [ev],
+    });
+    reviewReasons.push(`${a.reference}: ${notes}`);
+  }
 
   const positionOut: ClassificationResult["positions"] = positions.map((p) => ({
     target_type: p.target.type,
@@ -305,7 +347,7 @@ export async function runPipeline(input: PipelineInput, deps: PipelineDeps): Pro
     summary: summary || "No text content.",
     summary_source: aiSummary ? "ai" : "rule",
     issues: issues.map((i) => ({ ...i, evidence: verifyEvidence(i.evidence, pre.substantive, subject) })),
-    bill_references: resolutions.map((r, idx) => ({
+    bill_references: [...resolutions.map((r, idx) => ({
       raw_reference: mentions[idx].raw,
       reference: r.reference,
       bill_id: r.billId,
@@ -313,8 +355,9 @@ export async function runPipeline(input: PipelineInput, deps: PipelineDeps): Pro
       resolution_status: r.status,
       confidence: r.confidence,
       notes: r.notes,
+      source: "rule" as const,
       evidence: verifyEvidence(mentions[idx].evidence, pre.substantive, subject),
-    })),
+    })), ...aiBills],
     positions: positionOut.map((p) => ({ ...p, evidence: verifyEvidence(p.evidence, pre.substantive, subject) })),
     requested_actions: actions,
     sensitive: { flagged: sensitive.length > 0, categories: sensitive },

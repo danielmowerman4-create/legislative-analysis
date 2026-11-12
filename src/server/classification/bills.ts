@@ -13,6 +13,8 @@ export type BillMention = {
   otherStates: string[];
   // Written with no chamber, like "Bill 142" or "Raised Bill 5001".
   bare?: boolean;
+  // One number word and nothing else, like "Senate Bill forty": linked only when the letter backs it up.
+  loose?: boolean;
 };
 
 // HB142, H.B. 142, HB-142, hb #142, House Bill No. 142, sHB 5001, 5,001
@@ -26,6 +28,40 @@ const LOWERCASE = new RegExp(String.raw`(?<![\w.])([hs]\.?\s?b)${SEP}${NO}${NUM}
 const LONG = new RegExp(String.raw`\b(House|Hosue|Houes|Huose|Senate|Sentate|Senat|Assembly)[\s-]+(Joint\s+Resolution|Bill|Bil|Resolution)${SEP}${NO}${NUM}`, "gi");
 const BARE = new RegExp(String.raw`(?<![\w-])(?:(?:Raised|Proposed|Substitute|Committee)\s+)?Bill${SEP}${NO}${NUM}`, "gi");
 const NOT_LEGISLATION_BEFORE = /\b(?:house|hosue|houes|huose|senate|sentate|senat|assembly|joint|electric|power|gas|water|phone|cable|medical|hospital|tax|utility|light|sewer|insurance|rent|my|our|this\s+month'?s?)\s+$/;
+// "House Bill three eighty-eight", "Senate Bill number forty", "House Bill Three Hundred Ten"
+const SMALL: Record<string, number> = { oh: 0, zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11,
+  twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19 };
+const TENS: Record<string, number> = { twenty: 20, thirty: 30, forty: 40, fourty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const NUMBER_WORD = `(?:${[...Object.keys(SMALL), ...Object.keys(TENS), "hundred", "thousand"].join("|")})`;
+const SPELLED = new RegExp(String.raw`\b(House|Senate|Assembly)[\s-]+(Joint\s+Resolution|Bill|Resolution)\s+(?:(number|no\.?)\s+)?(${NUMBER_WORD}(?:[\s-]+(?:(?<=(?:hundred|thousand)[\s-]+)and[\s-]+)?${NUMBER_WORD}){0,5})\b`, "gi");
+// "a House bill ten of us testified on", "a Senate bill twenty years ago"
+const NOT_A_NUMBER_AFTER = /^\s*(?:of|or|to|more|other|days?|weeks?|months?|years?|times?|people|percent|dollars?)\b/i;
+
+// People say "three eighty-eight" for 388 and "one oh five" for 105; "three hundred ten" is read the long way.
+export function numberFromWords(words: string): number | null {
+  const parts = words.toLowerCase().split(/[\s-]+/).filter((w) => w && w !== "and");
+  if (!parts.length || parts.some((w) => !(w in SMALL) && !(w in TENS) && w !== "hundred" && w !== "thousand")) return null;
+  if (parts.some((w) => w === "hundred" || w === "thousand")) {
+    let total = 0;
+    let group = 0;
+    for (const w of parts) {
+      if (w === "hundred") group = (group || 1) * 100;
+      else if (w === "thousand") {
+        total += (group || 1) * 1000;
+        group = 0;
+      } else group += SMALL[w] ?? TENS[w];
+    }
+    return total + group || null;
+  }
+  let digits = "";
+  for (let i = 0; i < parts.length; i++) {
+    const unit = SMALL[parts[i + 1]];
+    if (parts[i] in TENS && unit >= 1 && unit <= 9) digits += String(TENS[parts[i++]] + unit);
+    else digits += String(SMALL[parts[i]] ?? TENS[parts[i]]);
+  }
+  return Number(digits) || null;
+}
+
 const NOT_LEGISLATION_AFTER = /^\s*(?:\.\d|%|dollars?\b|cents?\b|bucks?\b|per\b|a\s+month\b|days?\b|months?\b|years?\b)/;
 
 export const STATE_NAME_BY_CODE: Record<string, string> = {
@@ -51,7 +87,7 @@ export function extractBillMentions(substantive: string, subject: string): BillM
   const byRef = new Map<string, BillMention>();
   const sents = sentences(substantive);
   const scan = (text: string, field: "substantive" | "subject") => {
-    const add = (raw: string, type: string, written: string, index: number, bare = false) => {
+    const add = (raw: string, type: string, written: string, index: number, bare = false, loose = false) => {
       const num = written.replace(/,/g, "");
       const reference = bare ? `Bill ${Number(num)}` : normalizeBillIdentifier(type, num);
       const ev: Evidence = { start: index, end: index + raw.length, text: raw, field };
@@ -64,7 +100,8 @@ export function extractBillMentions(substantive: string, subject: string): BillM
         existing.otherStates.push(...otherStates.filter((s) => !existing.otherStates.includes(s)));
       } else {
         const billType = bare ? "" : normalizeBillType(type);
-        byRef.set(reference, { raw, reference, billType, number: Number(num), evidence: [ev], federalContext: federal, otherStates, bare });
+        const mention: BillMention = { raw, reference, billType, number: Number(num), evidence: [ev], federalContext: federal, otherStates, bare };
+        byRef.set(reference, loose ? { ...mention, loose } : mention);
       }
     };
     for (const m of text.matchAll(ABBREV)) add(m[0], m[1], m[2], m.index!);
@@ -72,6 +109,15 @@ export function extractBillMentions(substantive: string, subject: string): BillM
     for (const m of text.matchAll(LONG)) {
       const chamber = /^h/i.test(m[1]) ? "House" : /^s/i.test(m[1]) ? "Senate" : "Assembly";
       add(m[0], `${chamber} ${/^bil/i.test(m[2]) ? "Bill" : m[2]}`, m[3], m.index!);
+    }
+    for (const m of text.matchAll(SPELLED)) {
+      const number = numberFromWords(m[4]);
+      const oneWord = !/[\s-]/.test(m[4]);
+      const after = text.slice(m.index! + m[0].length);
+      const talk = !m[3] && ((oneWord && (number ?? 0) < 10) || NOT_A_NUMBER_AFTER.test(after));
+      if (!number || number > 99999 || talk) continue;
+      const chamber = /^h/i.test(m[1]) ? "House" : /^s/i.test(m[1]) ? "Senate" : "Assembly";
+      add(m[0], `${chamber} ${/^bil/i.test(m[2]) ? "Bill" : m[2]}`, String(number), m.index!, false, oneWord && !m[3]);
     }
     for (const m of text.matchAll(BARE)) {
       const before = text.slice(Math.max(0, m.index! - 24), m.index!).toLowerCase();
@@ -207,6 +253,8 @@ export function resolveBill(
   // A lone match this session is accepted (0.95) unless the topic points away.
   let confidence = corroboration.length ? 0.96 + 0.015 * (Math.min(corroboration.length, 3) - 1) : 0.95;
   if (topicConflict) confidence = 0.6;
+  const unbacked = mention.loose === true && !corroboration.length && !topicConflict;
+  if (unbacked) confidence = 0.9;
   return {
     reference: mention.reference,
     billId: c.id,
@@ -217,6 +265,8 @@ export function resolveBill(
       ? `Only ${mention.reference} in ${c.sessionIdentifier}, but the message topic does not match the bill ("${c.title.slice(0, 80)}"). Verify.`
       : corroboration.length
         ? `Only ${mention.reference} in the ${c.sessionIdentifier} session; corroborated by ${corroboration.join("; ")}.`
-        : `Only ${mention.reference} in the ${c.sessionIdentifier} session.`,
+        : unbacked
+          ? `Read "${mention.raw}" as ${mention.reference}, the only one in the ${c.sessionIdentifier} session. Nothing else in the letter confirms it.`
+          : `Only ${mention.reference} in the ${c.sessionIdentifier} session.`,
   };
 }

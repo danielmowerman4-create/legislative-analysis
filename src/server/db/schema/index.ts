@@ -7,4 +7,5 @@ export * from "./operations";
 export * from "./communications";
 export * from "./platform";
 export * from "./center";
+export * from "./office";
 export type { EvidenceSpan } from "./columns";

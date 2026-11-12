@@ -19,6 +19,8 @@ export function shortDate(input: Date | string | null | undefined, now = new Dat
   return yf.format(d) === yf.format(now) ? dtf.format(d) : dtfYear.format(d);
 }
 
+export const monthDay = (input: Date | string) => dtf.format(toDate(input)!);
+
 export function fullDate(input: Date | string | null | undefined) {
   const d = toDate(input);
   return d ? `${dtfYear.format(d)}, ${tf.format(d)}` : "Not recorded";

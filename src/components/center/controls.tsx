@@ -32,6 +32,7 @@ import {
   describeMailboxAction,
   disconnectMailboxAction,
   discardReplyAction,
+  draftBillAnswerAction,
   draftReplyAction,
   formLetterSettingsAction,
   internalDomainsAction,
@@ -238,6 +239,19 @@ export function DraftReplyButton({ messageId }: { messageId: string }) {
   return (
     <div>
       <Button type="button" disabled={pending} onClick={() => run(() => draftReplyAction(messageId))}>Draft a reply</Button>
+      <Err text={error} />
+    </div>
+  );
+}
+
+export function AnswerSideButton({ reference, side, people }: { reference: string; side: "support" | "oppose" | "other"; people: number }) {
+  const { pending, error, run } = useRun();
+  const router = useRouter();
+  return (
+    <div>
+      <Button type="button" disabled={pending} onClick={() => run(() => draftBillAnswerAction(reference, side), () => router.push("/constituent-center/replies"))}>
+        {people === 1 ? "Draft a reply to this person" : `Draft one reply to all ${people}`}
+      </Button>
       <Err text={error} />
     </div>
   );

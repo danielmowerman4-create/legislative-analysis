@@ -365,7 +365,8 @@ export async function setSenderRuleStatus(ctx: OfficeContext, ruleId: string, st
 export const PERSON = sql.raw("coalesce(m.contact_id::text, m.claimed_address, case when m.sender_trust = 'relay' then m.id::text else m.from_address end)");
 export const CONFIRMED = sql.raw("m.sender_trust in ('verified', 'relay')");
 
-const THEIR_WORD = sql.raw("(p.position in ('support', 'oppose', 'mixed')) desc nulls last, m.received_at desc");
+// One letter stands for a person on a bill: the one that takes a side, else the newest.
+export const THEIR_WORD = sql.raw("(p.position in ('support', 'oppose', 'mixed')) desc nulls last, m.received_at desc");
 
 export const CAMPAIGNS = sql`(select m.template_cluster_id from email_messages m where m.template_cluster_id is not null and ${CONFIRMED} group by 1 having count(distinct ${PERSON}) >= 2)`;
 
@@ -482,9 +483,26 @@ export async function topics(ctx: OfficeContext) {
   });
 }
 
-export async function billCorrespondence(ctx: OfficeContext, reference: string, page: { limit?: number; offset?: number } = {}) {
+export type BillSide = "support" | "oppose" | "other";
+const WEEKS_SHOWN = 12;
+
+// Up to twelve weeks; empty weeks are kept so the columns follow the calendar.
+function fillWeeks(rows: { week: string; support: number; oppose: number; other: number }[]) {
+  if (!rows.length) return [];
+  const out = [];
+  const last = new Date(`${rows[rows.length - 1].week}T12:00:00Z`).getTime();
+  const first = Math.max(new Date(`${rows[0].week}T12:00:00Z`).getTime(), last - (WEEKS_SHOWN - 1) * 7 * 86400_000);
+  for (let t = first; t <= last; t += 7 * 86400_000) {
+    const week = new Date(t).toISOString().slice(0, 10);
+    out.push(rows.find((r) => r.week === week) ?? { week, support: 0, oppose: 0, other: 0 });
+  }
+  return out;
+}
+
+export async function billCorrespondence(ctx: OfficeContext, reference: string, page: { limit?: number; offset?: number; side?: BillSide } = {}) {
   requirePermission(ctx, "inbox.read");
   const limit = Math.min(page.limit ?? 100, 500);
+  const onSide = page.side === "other" ? sql`where s.position not in ('support', 'oppose')` : page.side ? sql`where s.position = ${page.side}` : sql``;
   return withTenant(tenantScope(ctx), async (tx) => {
     const perPerson = sql`(
       select distinct on (${PERSON}) m.id as message_id, coalesce(c.full_name, m.claimed_name, m.from_name) as name, coalesce(m.claimed_address, m.from_address) as address,
@@ -508,10 +526,16 @@ export async function billCorrespondence(ctx: OfficeContext, reference: string, 
       district_status: string | null; form_letter: boolean; received_at: Date | string; is_sensitive: boolean; assigned_to: string | null;
     }>(sql`
       select s.message_id, s.name, s.address, s.position, s.requested_action, s.evidence, s.district_status, s.form_letter, s.received_at, s.is_sensitive, s.assigned_to
-      from ${perPerson}
+      from ${perPerson} ${onSide}
       -- A person's own letter before a form letter, and the newest first.
       order by s.form_letter, s.received_at desc, s.message_id
       limit ${limit + 1} offset ${page.offset ?? 0}`);
+    const weeks = await tx.execute<{ week: string; support: number; oppose: number; other: number }>(sql`
+      select date_trunc('week', s.received_at)::date::text as week,
+        count(*) filter (where s.position = 'support')::int as support,
+        count(*) filter (where s.position = 'oppose')::int as oppose,
+        count(*) filter (where s.position not in ('support', 'oppose'))::int as other
+      from ${perPerson} group by 1 order by 1`);
     const tally = (pick: (g: (typeof groups.rows)[number]) => string | null) => {
       const out: Record<string, number> = {};
       for (const g of groups.rows) {
@@ -523,13 +547,35 @@ export async function billCorrespondence(ctx: OfficeContext, reference: string, 
     return {
       reference, billId: groups.rows.find((g) => g.bill_id)?.bill_id ?? null, title: groups.rows.find((g) => g.title)?.title ?? null,
       people: groups.rows.reduce((t, g) => t + g.n, 0), inDistrict: groups.rows.filter((g) => g.in_district).reduce((t, g) => t + g.n, 0),
-      positions: tally((g) => g.position), requests: tally((g) => g.requested_action), hasMore: rows.rows.length > limit,
+      positions: tally((g) => g.position), requests: tally((g) => g.requested_action), hasMore: rows.rows.length > limit, weeks: fillWeeks(weeks.rows),
+      inDistrictSides: tally((g) => (g.in_district ? (g.position === "support" || g.position === "oppose" ? g.position : "other") : null)),
       letters: rows.rows.slice(0, limit).map((r) => ({
         messageId: r.message_id, name: r.name ?? r.address, position: r.position, request: r.requested_action, districtStatus: r.district_status,
         formLetter: r.form_letter, receivedAt: r.received_at,
         quote: mayRead(ctx, { isSensitive: r.is_sensitive, assignedTo: r.assigned_to }) ? (r.evidence[0]?.text ?? null) : RESTRICTED,
       })),
     };
+  });
+}
+
+// People who wrote each week, by the side they took on a bill.
+export async function mailByWeek(ctx: OfficeContext) {
+  requirePermission(ctx, "inbox.read");
+  return withTenant(tenantScope(ctx), async (tx) => {
+    const rows = await tx.execute<{ week: string; support: number; oppose: number; other: number }>(sql`
+      select s.week, count(*) filter (where s.side = 'support')::int as support, count(*) filter (where s.side = 'oppose')::int as oppose,
+        count(*) filter (where s.side = 'other')::int as other
+      from (
+        select date_trunc('week', m.received_at)::date::text as week, ${PERSON} as person,
+          case when bool_or(p.position = 'support') and not bool_or(p.position = 'oppose') then 'support'
+               when bool_or(p.position = 'oppose') and not bool_or(p.position = 'support') then 'oppose' else 'other' end as side
+        from email_messages m
+        left join issue_positions p on p.message_id = m.id and p.target_type = 'bill' and p.status <> 'rejected'
+        where m.organization_id = ${ctx.orgId} and m.direction = 'inbound' and ${CONFIRMED} and m.duplicate_of_id is null
+          and m.is_spam = false and m.is_automated = false and m.received_at > now() - interval '84 days'
+        group by 1, 2
+      ) s group by 1 order by 1`);
+    return fillWeeks(rows.rows);
   });
 }
 
@@ -613,7 +659,9 @@ export async function aiReadingsToday(tx: Db, orgId: string) {
   const startOfDay = new Date();
   startOfDay.setUTCHours(0, 0, 0, 0);
   const [usage] = await tx.select({ n: count() }).from(classificationRuns)
-    .where(and(eq(classificationRuns.organizationId, orgId), eq(classificationRuns.mode, "rules+ai"), gte(classificationRuns.createdAt, startOfDay)));
+    .where(and(
+      eq(classificationRuns.organizationId, orgId), sql`${classificationRuns.output}->>'ai_status' = 'ok'`, gte(classificationRuns.createdAt, startOfDay),
+    ));
   return usage.n;
 }
 

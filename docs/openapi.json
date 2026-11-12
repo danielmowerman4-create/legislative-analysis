@@ -320,7 +320,7 @@
     },
     "/api/export/calendar": {
       "get": {
-        "summary": "Hearings from yesterday through the next 60 days as an iCalendar file",
+        "summary": "Hearings and the office's own calendar entries from yesterday through the next 60 days as an iCalendar file",
         "description": "Authentication: session (legislation.read).",
         "responses": {
           "200": {
@@ -365,6 +365,8 @@
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "type": "string",
               "enum": [
+                "mine",
+                "all",
                 "tracked"
               ]
             }

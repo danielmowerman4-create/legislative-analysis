@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runPipeline, type PipelineDeps } from "@/server/classification/pipeline";
 import { flattenTaxonomy } from "@/server/classification/default-taxonomy";
-import { extractBillMentions, sessionsInScope, type BillCandidate } from "@/server/classification/bills";
+import { extractBillMentions, numberFromWords, sessionsInScope, type BillCandidate } from "@/server/classification/bills";
 import { numberCloseness, type SessionBill } from "@/server/classification/bill-matching";
 
 const SESSION = { sessionIdentifier: "2025-2026", sessionStart: "2025-01-13", sessionEnd: "2026-04-30", jurisdictionCode: "ZZ" };
@@ -51,6 +51,27 @@ describe("how people write bill numbers", () => {
   });
   it("leaves pounds, hours and invoices alone", () => {
     expect(extractBillMentions("It weighs lb 40 and took hr 12. My electric bill 142 was late. A bill of 85 dollars.", "")).toHaveLength(0);
+  });
+  it.each([["one forty-two", 142], ["three eighty-eight", 388], ["one oh five", 105], ["three hundred and ten", 310], ["Three Hundred Ten", 310], ["forty", 40],
+    ["ninety-nine", 99], ["twelve", 12], ["fifteen hundred", 1500], ["five thousand one", 5001]])("reads the number in %s", (words, number) => {
+    expect(numberFromWords(words)).toBe(number);
+  });
+  it("reads a bill number written in words", () => {
+    expect(extractBillMentions("Please vote yes on House Bill one forty-two.", "").map((m) => m.reference)).toEqual(["HB 142"]);
+    expect(extractBillMentions("I am writing about Senate Bill number forty.", "").map((m) => m.reference)).toEqual(["SB 40"]);
+    expect(extractBillMentions("House Bill Three Hundred Ten would take our road money.", "").map((m) => m.reference)).toEqual(["HB 310"]);
+  });
+  it("leaves ordinary talk after the word bill alone", () => {
+    const talk = "There was a House bill one of my neighbors told me about. I wrote about a Senate bill two years ago. The House bill ten of us testified on died.";
+    expect(extractBillMentions(talk, "")).toHaveLength(0);
+  });
+  it("links a lone number word only when the letter backs it up", async () => {
+    const lone = only(await run("Please look at Senate Bill forty."));
+    expect(lone.reference).toBe("SB 40");
+    expect(lone.confidence).toBeLessThan(0.95);
+    const backed = only(await run("Please vote no on Senate Bill forty. Speed cameras in school zones only raise money."));
+    expect(backed.reference).toBe("SB 40");
+    expect(backed.confidence).toBeGreaterThanOrEqual(0.95);
   });
 });
 

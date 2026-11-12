@@ -4,7 +4,7 @@ import {
   agencyDirectory, bills, billSponsors, classificationFeedback, classificationRuns, contacts, emailMessages, issuePositions, issueTaxonomy, legislativeSessions,
   mailLedger, messageAsks, messageBillLinks, messageIssueLinks, officeSettings, organizations, reviewQueue, senderRules, tasks, type AutoAcceptThresholds,
 } from "../db/schema";
-import { runPipeline, inputHash } from "../classification/pipeline";
+import { BROUGHT_BACK, runPipeline, inputHash } from "../classification/pipeline";
 import { stripExternalBanner } from "../classification/preprocess";
 import { sessionsInScope, STATE_NAME_BY_CODE, type BillCandidate } from "../classification/bills";
 import { NO_SESSION, type SessionScope } from "../classification/bill-matching";
@@ -284,7 +284,7 @@ async function applyClassification(
         candidateBillIds: b.candidate_bill_ids,
         resolutionNotes: b.notes,
         confidence: b.confidence,
-        source: "rule",
+        source: b.source,
         status: autoAccept ? "provisional" : needsReview ? "needs_review" : "provisional",
         evidence: b.evidence,
         runId,
@@ -343,10 +343,11 @@ async function applyClassification(
       payload: r.case_suggestion as unknown as Record<string, unknown>,
     });
   }
-  if (!typedByStaff && r.message_type[0].confidence < th.messageType && types[0] !== "newsletter_automated") {
+  const secondLook = r.review_reasons.includes(BROUGHT_BACK);
+  if (!typedByStaff && (secondLook || (r.message_type[0].confidence < th.messageType && types[0] !== "newsletter_automated"))) {
     review.push({
       organizationId: orgId, kind: "message_type", messageId, entityType: "email_message_type", entityId: messageId,
-      reason: `Message type uncertain (${types.join(", ")}).`, priority: 20,
+      reason: secondLook ? BROUGHT_BACK : `Message type uncertain (${types.join(", ")}).`, priority: secondLook ? 50 : 20,
     });
   }
 

@@ -39,7 +39,7 @@ function fakeAi(over: Partial<AiClassification> | null = {}, generated: string |
     model: "fake",
     classify: async (input) => {
       calls.push(input.text);
-      return over === null ? null : { message_types: [], summary: "", issues: [], positions: [], requested_actions: [], asks: [], ...over };
+      return over === null ? null : { message_types: [], summary: "", issues: [], positions: [], requested_actions: [], bills: [], asks: [], ...over };
     },
     generate: async () => (generated === null ? null : { text: generated, citedIds: [] }),
   };
@@ -642,12 +642,49 @@ describe("what was added from the earlier system", () => {
     const o = await office();
     let guidance: string | null | undefined;
     setAiProviderForTests({ model: "fake", generate: async () => null, classify: async (i) => ((guidance = i.officeGuidance), { message_types: [], summary: "",
-      issues: [], positions: [], requested_action: [], requested_actions: [], asks: [] } as unknown as AiClassification) });
+      issues: [], positions: [], requested_action: [], requested_actions: [], bills: [], asks: [] } as unknown as AiClassification) });
     await setAiGuidance(o.ctx, "The mill closure is our biggest issue.");
     await receive(o.orgId, { from: "a@mail.test", name: "Ann", body: "Please do something about the mill closing in our town." });
     await classifyAll();
     expect(guidance).toBe("The mill closure is our biggest issue.");
     await expect(setAiGuidance(o.ctx, "x".repeat(2001))).rejects.toThrow(/2,000/);
+  });
+
+  it("masks SSNs, birth dates and long numbers before AI writes a reply opening", async () => {
+    const o = await office();
+    let sent = "";
+    const opening = "Thank you for telling us about your claim.";
+    setAiProviderForTests({ model: "fake", classify: async () => null,
+      generate: async (i) => ((sent = i.sources.map((s) => s.text).join("\n")), { text: opening, citedIds: [] }) });
+    const r = await receive(o.orgId, { from: "a@mail.test", name: "Ann Lee", subject: "My claim",
+      body: "Please help with my unemployment claim. My SSN is 123-45-6789, DOB 4/12/1961, and the claim number is 4400912345." });
+    await classifyAll();
+    const draft = await createReplyDraft(o.ctx, r.messageId);
+    expect(sent).toContain("Please help with my unemployment claim. My SSN is [SSN], [DOB], and the claim number is [NUMBER].");
+    expect(sent).not.toMatch(/123-45-6789|4\/12\/1961|4400912345/);
+    expect(draft.aiGenerated).toBe(true);
+    expect(draft.bodyText).toContain(opening);
+  });
+
+  it("sends a bill only AI found to a person and never links it on its own", async () => {
+    await syncJurisdiction("ZZ", { provider: new FixtureProvider(demoLegislativeDataset()), sessionIdentifiers: DEMO_SESSIONS().map((x) => x.identifier) });
+    const o = await office();
+    const quote = "the bill that raises the fines for holding a phone behind the wheel";
+    const named = (reference: string, evidence_quote: string) => ({ reference, confidence: 0.95, evidence_quote });
+    fakeAi({ bills: [named("HB 128", quote), named("SB 18", "not in the letter")] });
+    const r = await receive(o.orgId, { from: "a@mail.test", name: "Ann Lee", subject: "Distracted drivers",
+      body: `I was rear-ended last month by a driver who was texting. Please vote for ${quote}.` });
+    await classifyAll();
+
+    const links = await withTenant({ orgId: o.orgId }, (tx) => tx.select().from(messageBillLinks).where(eq(messageBillLinks.messageId, r.messageId)));
+    const [hb128] = await withTenant({ orgId: o.orgId }, (tx) => tx.select().from(bills).where(eq(bills.identifier, "HB 128")));
+    expect(links).toHaveLength(1);
+    expect(links[0]).toMatchObject({ reference: "HB 128", rawReference: quote, billId: null, candidateBillIds: [hb128.id], source: "ai" });
+    expect(links[0].status).toBe("needs_review");
+    expect(links[0].confidence).toBeLessThanOrEqual(0.8);
+    expect(links[0].resolutionNotes).toMatch(/^AI reads .* as HB 128, Hands-Free Driving Penalties\. The rules did not find it\.$/);
+    expect((await message(o.orgId, r.messageId)).requiresReview).toBe(true);
+    expect(await billCorrespondence(o.ctx, "HB 128")).toMatchObject({ people: 0 });
   });
 
   it("records what each person wants done with a bill", async () => {

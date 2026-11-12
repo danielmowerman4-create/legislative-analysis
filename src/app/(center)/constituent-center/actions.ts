@@ -28,6 +28,7 @@ import { addMessageNote, assignMessage, setBillLink, setIssueLabel, setPosition,
 import { searchBillsByText } from "@/server/services/legislation";
 import { saveAgency, saveIssue, setAgencyActive, setAiDailyLimit, setIssueActive, setTaggingLevels } from "@/server/services/reading";
 import { approveReplyDraft, createReplyDraft, discardReplyDraft, markReplySent, sendReplyDraft, updateReplyDraft } from "@/server/services/replies";
+import { draftBillAnswer } from "@/server/services/bill-answers";
 import { turnOffSending, turnOnSending } from "@/server/email/sending";
 import {
   configureMailbox,
@@ -133,6 +134,12 @@ export async function messageNoteAction(messageId: string, body: string) {
 export async function draftReplyAction(messageId: string) {
   return center(async (ctx) => {
     await createReplyDraft(ctx, messageId);
+  });
+}
+
+export async function draftBillAnswerAction(reference: string, side: "support" | "oppose" | "other") {
+  return center(async (ctx) => {
+    await draftBillAnswer(ctx, reference, side);
   });
 }
 

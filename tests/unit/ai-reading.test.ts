@@ -14,7 +14,7 @@ const ANSWER = {
   message_types: [{ type: "constituent_policy", confidence: 0.95 }], summary: "Asks the representative to support HB 142.",
   issues: [{ taxonomy_id: "education.school_funding", confidence: 0.92, evidence_quote: "our schools need the new funding formula" }],
   positions: [{ target: "bill:HB 142", position: "support", confidence: 0.96, evidence_quote: "I support HB 142", requested_action: "vote_yes" }],
-  requested_actions: [], asks: [],
+  requested_actions: [], bills: [], asks: [],
 };
 
 function respond(): [number, unknown] {

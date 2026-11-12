@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { officeContextOrThrow } from "@/server/auth/next";
 import { can } from "@/server/authz/context";
-import { listEvents, POSITION_LABEL, PRIORITY_LABEL, trackedReport } from "@/server/services/legislation";
+import { POSITION_LABEL, PRIORITY_LABEL, trackedReport } from "@/server/services/legislation";
+import { CALENDAR_SCOPES, officeCalendar, type CalendarScope } from "@/server/services/calendar";
 import { STATUS_LABEL } from "@/server/legislation/normalize";
 import { dayKey, DISPLAY_TIME_ZONE, isDateOnly } from "@/lib/format";
 import { whipBoard } from "@/server/services/tools";
@@ -77,8 +78,9 @@ async function exportFile(request: Request, { params }: { params: Promise<{ kind
   }
 
   if (kind === "calendar") {
-    const trackedOnly = url.searchParams.get("scope") === "tracked";
-    const events = await listEvents(ctx, { from: new Date(Date.now() - 86400_000), to: new Date(Date.now() + 60 * 86400_000), trackedOnly });
+    const asked = url.searchParams.get("scope") ?? "all";
+    const scope: CalendarScope = Object.hasOwn(CALENDAR_SCOPES, asked) ? (asked as CalendarScope) : "all";
+    const { hearings: events, own } = await officeCalendar(ctx, { from: new Date(Date.now() - 86400_000), to: new Date(Date.now() + 60 * 86400_000), scope });
     const base = getEnv().APP_URL.replace(/\/$/, "");
     const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Legislative Analysis//Hearings//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
       "X-WR-CALNAME:Legislative hearings"];
@@ -96,6 +98,15 @@ async function exportFile(request: Request, { params }: { params: Promise<{ kind
         `DESCRIPTION:${icsText(bills.join("\n"))}`,
         ...(e.bills[0] ? [`URL:${base}/bills/${e.bills[0].id}`] : []),
         `STATUS:${e.status === "cancelled" ? "CANCELLED" : "CONFIRMED"}`,
+        "END:VEVENT",
+      );
+    }
+    for (const e of own) {
+      lines.push(
+        "BEGIN:VEVENT", `UID:${e.id}@legislative-intelligence`, `DTSTAMP:${icsTime(new Date())}`,
+        ...(e.allDay ? [`DTSTART;VALUE=DATE:${dayKey(e.startsAt).replace(/-/g, "")}`]
+          : [`DTSTART:${icsTime(e.startsAt)}`, `DTEND:${icsTime(new Date(e.startsAt.getTime() + 3600_000))}`]),
+        `SUMMARY:${icsText(e.title)}`, ...(e.location ? [`LOCATION:${icsText(e.location)}`] : []), ...(e.note ? [`DESCRIPTION:${icsText(e.note)}`] : []),
         "END:VEVENT",
       );
     }

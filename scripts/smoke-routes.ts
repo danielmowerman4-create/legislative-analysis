@@ -19,13 +19,13 @@ const PAGES = [
   "/today", "/bills", "/bills?view=tracked", "/bills?view=hearings", "/bills?view=committees", "/bills?view=enacted", "/bills?view=onechamber",
   "/bills?view=dead", "/bills?q=school", "/tracked", "/tracked?group=stage", "/calendar", "/calendar?scope=tracked", "/compare", "/committees",
   "/legislators", "/scorecards", "/scorecards?sort=opponents", "/alerts", "/reports", "/notifications", "/settings", "/team", "/help", "/account/mfa",
-  "/api/search?q=school", "/api/export/tracked", "/api/export/calendar",
+  "/api/search?q=school", "/api/export/tracked", "/api/export/calendar", "/calendar?scope=all", "/api/export/calendar?scope=mine", "/press",
 ];
 const BILL_TABS = ["", "?tab=timeline", "?tab=text", "?tab=votes", "?tab=related", "?tab=notes", "/compare", "/whip", "/whip?chamber=upper"];
 
 const CENTER = "/constituent-center";
 const CENTER_PAGES = [
-  "", "/mail", "/mail?folder=new", "/form-letters", "/casework", "/people", "/replies", "/replies?view=sent", "/topics", "/every-message", "/setup",
+  "", "/mail", "/mail?folder=new", "/mail?stance=support", "/form-letters", "/casework", "/people", "/replies", "/replies?view=sent", "/topics", "/every-message", "/setup",
 ].map((p) => `${CENTER}${p}`);
 
 async function check(path: string, cookie: string | null) {

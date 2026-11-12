@@ -127,6 +127,13 @@
       "when": 1794347442699,
       "tag": "0017_must_change_password",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794439613813,
+      "tag": "0018_office_calendar_and_press",
+      "breakpoints": true
     }
   ]
 }

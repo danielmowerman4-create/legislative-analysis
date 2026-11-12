@@ -4,7 +4,7 @@ import { bills, emailDrafts, organizations, trackedBills, users } from "../db/sc
 import { requirePermission, tenantScope, type OfficeContext } from "../authz/context";
 import { AppError } from "../errors";
 import { audit } from "./audit";
-import { CONFIRMED, PERSON } from "./center";
+import { CONFIRMED, PERSON, THEIR_WORD } from "./center";
 import { billFactLines } from "./replies";
 
 const ANSWER_SIDES = ["support", "oppose", "other"] as const;
@@ -35,7 +35,7 @@ async function writers(tx: Db, ctx: OfficeContext, reference?: string): Promise<
     where p.organization_id = ${ctx.orgId} and p.target_type = 'bill' and p.status <> 'rejected'
       ${reference ? sql`and p.bill_reference = ${reference}` : sql``}
       and m.direction = 'inbound' and ${CONFIRMED} and m.duplicate_of_id is null and m.is_sensitive = false
-    order by p.bill_reference, ${PERSON}, m.received_at desc`);
+    order by p.bill_reference, ${PERSON}, ${THEIR_WORD}`);
   return rows.rows.map((r) => ({
     reference: r.reference, billId: r.bill_id, messageId: r.message_id, person: r.person, name: r.name ?? r.address ?? r.from_address,
     address: r.address?.toLowerCase() ?? null, side: sideOf(r.position), receivedAt: new Date(r.received_at), answered: r.answered,

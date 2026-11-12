@@ -1,14 +1,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { freshDatabase, makeOffice } from "../helpers/db";
 import { receive } from "../helpers/messages";
 import { closeDb, withTenant } from "@/server/db/client";
-import { emailMessages, mailLedger } from "@/server/db/schema";
+import { emailMessages, mailLedger, reviewQueue } from "@/server/db/schema";
 import { setAiProviderForTests, type AiClassification, type AiProvider } from "@/server/ai/provider";
 import { enqueue } from "@/server/jobs/queue";
 import { drainJobs } from "@/server/jobs/runner";
 import { addSenderRule, billCorrespondence, enableConstituentCenter, ledgerOverview, listFormLetters, needsAPerson,
-  restoreFromLedger } from "@/server/services/center";
+  restoreFromLedger, setupStatus } from "@/server/services/center";
+import { BROUGHT_BACK } from "@/server/classification/pipeline";
 import { listInbox } from "@/server/services/inbox";
 
 beforeAll(async () => {
@@ -29,7 +30,7 @@ function fakeAi(over: Partial<AiClassification>) {
     model: "fake",
     classify: async (input) => {
       calls.push(input.text);
-      return { message_types: [], summary: "", issues: [], positions: [], requested_actions: [], asks: [], ...over };
+      return { message_types: [], summary: "", issues: [], positions: [], requested_actions: [], bills: [], asks: [], ...over };
     },
     generate: async () => null,
   };
@@ -124,5 +125,49 @@ describe("what a reading may set aside", () => {
     const waiting = await needsAPerson(o.ctx);
     expect([...waiting.urgent, ...waiting.casework].map((a) => a.messageId)).toContain(r.messageId);
     expect((await listInbox(o.ctx, {})).items.map((i) => i.id)).toContain(r.messageId);
+  });
+
+  it("lets AI bring a set-aside letter back for a person to look at", async () => {
+    const o = await office();
+    const calls = fakeAi({ message_types: [{ type: "constituent_policy", confidence: 0.9 }] });
+    const r = await receive(o.orgId, { from: "maria@lopezbakery.test", name: "Maria Lopez", body: LETTER("Maria Lopez"),
+      headers: { "list-unsubscribe": "<mailto:unsubscribe@sendtool.test>" } });
+    await classifyAll();
+    expect(calls).toHaveLength(1);
+
+    const m = await message(o.orgId, r.messageId);
+    expect(m).toMatchObject({ triageStatus: "new", isAutomated: false, requiresReview: true, messageTypes: ["constituent_policy"] });
+    expect((await entry(o.orgId, r.messageId)).disposition).toBe("filed");
+    const waiting = await withTenant({ orgId: o.orgId },
+      (tx) => tx.select().from(reviewQueue).where(and(eq(reviewQueue.messageId, r.messageId), eq(reviewQueue.kind, "message_type"))));
+    expect(waiting.map((w) => w.reason)).toEqual([BROUGHT_BACK]);
+    expect(await billCorrespondence(o.ctx, "HB 142")).toMatchObject({ people: 1, positions: { oppose: 1 } });
+  });
+
+  it("keeps mail set aside when AI is unsure, calls it a newsletter, or fails, and counts each look", async () => {
+    const o = await office();
+    const newsletter = () => receive(o.orgId, { from: "editor@paper.test", subject: "This week at the Capitol",
+      body: "This week at the Capitol and what to expect next.", headers: { "list-id": "<weekly.paper.test>" } });
+    const stays = async (messageId: string) => {
+      await classifyAll();
+      expect(await message(o.orgId, messageId)).toMatchObject({ triageStatus: "archived", isAutomated: true, requiresReview: false });
+      expect((await entry(o.orgId, messageId)).disposition).toBe("screened");
+    };
+
+    fakeAi({ message_types: [{ type: "constituent_policy", confidence: 0.6 }] });
+    await stays((await newsletter()).messageId);
+    fakeAi({ message_types: [{ type: "constituent_policy", confidence: 0.8 }, { type: "newsletter_automated", confidence: 0.9 }] });
+    await stays((await newsletter()).messageId);
+    expect((await setupStatus(o.ctx)).aiUsedToday).toBe(2);
+
+    setAiProviderForTests({ model: "fake", classify: async () => null, generate: async () => null });
+    await stays((await newsletter()).messageId);
+    expect((await setupStatus(o.ctx)).aiUsedToday).toBe(2);
+
+    // Staff mail the rules set aside is never sent for a second look.
+    const calls = fakeAi({ message_types: [{ type: "constituent_policy", confidence: 0.95 }] });
+    await receive(o.orgId, { from: "aide@house.example.gov", body: "Can you pull the HB 142 correspondence before Tuesday?" });
+    await classifyAll();
+    expect(calls).toHaveLength(0);
   });
 });

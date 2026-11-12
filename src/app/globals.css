@@ -534,6 +534,17 @@
     }
   }
 
+  /* Oppose is hatched and other is hollow, so the split reads without color. */
+  .bar-support {
+    background: var(--support);
+  }
+  .bar-oppose {
+    background: repeating-linear-gradient(135deg, var(--oppose) 0 4px, color-mix(in oklch, var(--oppose) 55%, var(--bg)) 4px 7px);
+  }
+  .bar-other {
+    background: var(--bg);
+    box-shadow: inset 0 0 0 1.5px var(--border-strong);
+  }
   .tally {
     display: inline-flex;
     flex-wrap: wrap;

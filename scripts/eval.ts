@@ -1,4 +1,4 @@
-// npx tsx scripts/eval.ts [dev|test|both]
+// npx tsx scripts/eval.ts [dev|test|second|fresh|both] [ai]
 import { writeFileSync } from "node:fs";
 import { evaluate } from "../tests/eval/run";
 import { PIPELINE_VERSION } from "../src/server/classification/schema";
@@ -7,13 +7,14 @@ process.env.APP_ENV ??= "test";
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 
 async function main() {
-  const which = (process.argv[2] ?? "both") as "dev" | "test" | "both";
+  const which = (process.argv[2] ?? "both") as "dev" | "test" | "second" | "fresh" | "both";
   const splits = which === "both" ? (["dev", "test"] as const) : ([which] as const);
-  const lines: string[] = [`# Classification evaluation`, ``, `Pipeline ${PIPELINE_VERSION}, rules only (no AI provider). Synthetic hand-labeled set in tests/eval/dataset.ts. Generated ${new Date().toISOString().slice(0, 10)}.`, ``];
+  const ai = process.argv[3] === "ai" ? new (await import("../src/server/ai/anthropic")).AnthropicProvider() : null;
+  const lines: string[] = [`# Classification evaluation`, ``, `Pipeline ${PIPELINE_VERSION}, ${ai ? `rules + AI (${ai.model})` : "rules only (no AI provider)"}. Synthetic hand-labeled set in tests/eval/dataset.ts. Generated ${new Date().toISOString().slice(0, 10)}.`, ``];
   for (const s of splits) {
-    const r = await evaluate(s);
+    const r = await evaluate(s, ai);
     lines.push(
-      `## ${s === "dev" ? "Dev split (rules tuned against it)" : "Test split (held out)"} · ${r.n} messages`,
+      `## ${{ dev: "Dev split (rules tuned against it)", test: "Test split (held out)", second: "Second-reader split", fresh: "Fresh split (held out)" }[s]} · ${r.n} messages`,
       ``,
       `| Task | Precision | Recall | F1 |`,
       `|---|---|---|---|`,
@@ -30,6 +31,9 @@ async function main() {
       `| Stated positions correct (all) | ${pct(r.positionAccuracy)} |`,
       `| Auto-accepted positions that are correct (target 95%) | ${pct(r.positionAutoPrecision)} of ${r.positionAuto} |`,
       `| Labeled positions auto-accepted correctly | ${pct(r.positionAutoCoverage)} |`,
+      `| Letters a person wrote that were set aside | ${r.aside.lettersSetAside} of ${r.aside.letters} |`,
+      `| Bulk or staff mail left in the mail | ${r.aside.bulkKept} of ${r.aside.bulk} |`,
+      `| Bills AI offered for a person to confirm | ${r.offered.right} right, ${r.offered.wrong} wrong |`,
       ``,
       `| Position | Precision | Recall |`,
       `|---|---|---|`,
